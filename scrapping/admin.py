@@ -30,8 +30,9 @@ class AdminScrapeHistory(admin.ModelAdmin):
     list_display = [
         "pk",
         "job_board",
-        "run_id",
+        "skill",
         "number_of_jobs_returned",
+        "run_id",
         "runtime",
         "price",
     ]

@@ -97,8 +97,8 @@ class Resume(models.Model):
 class JobBoardScrapeHistory(models.Model):
     date_scrape_started = models.DateTimeField(auto_now_add=True, null=True)
     date_scrape_ended = models.DateTimeField(null=True, blank=True)
-    run_id = models.TextField()
-    scraper_name = models.TextField()
+    run_id = models.CharField(max_length=255, null=True)
+    scraper_name = models.CharField(max_length=255, null=True, default='apply-jobs-forever')
     job_board = models.TextField()
     url = models.TextField()
     days = models.IntegerField()
@@ -133,11 +133,12 @@ class JobBoardScrapeResults(models.Model):
     skill = models.TextField()
     priority = models.IntegerField()
     date_resume_created = models.DateTimeField(null=True, blank=True)
-    date_inserted = models.DateTimeField(auto_now_add=True)
     date_scraped = models.DateTimeField(null=True, blank=True)
     run_id = models.TextField()
     date_job_posted = models.DateTimeField(null=True, blank=True)
+    date_job_posted_human_form = models.CharField(max_length=255, null=True, blank=False)
     salary = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    salary_human_readable_form = models.CharField(max_length=255, null=True, blank=False)
     job_type = models.TextField()
     company = models.TextField()
     location = models.TextField()
@@ -149,8 +150,14 @@ class JobBoardScrapeResults(models.Model):
     date_today = models.DateTimeField(null=True, blank=True)
     apply_type = models.TextField()
     external_apply_url = models.TextField(null=True, blank=True)
+    raw_json_result = models.JSONField(default=dict, null=True, blank=True)
+    raw_json_job_details = models.JSONField(default=dict, null=True, blank=True)
 
 
     class Meta:
         verbose_name = "Scrape Result"
         verbose_name_plural = "Scrape Results"
+
+
+    def __str__(self):
+        return "<JobBoardScrapeResults | Run ID: %s >" % self.job_board_scrape_history.run_id

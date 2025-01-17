@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 
 
+from api.serializers import JobBoardScrapeResultsSerializer
 from scrapping import models
 
 
@@ -39,39 +40,60 @@ class ScrapeZipRecruiterEndpoint(APIView):
                     type=openapi.TYPE_STRING,
                     description="The consuming app's identifier"
                 ),
+                "SingleSkill": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    description="If this parameter is set, only one skill url will be scrapped, otherwise, the system will scrape all other skills url"
+                ),
             },
         )
     )
     def post(self, request):
         number_of_days = request.data.get("NumberOfDays")
         app_consuming = request.data.get("AppConsuming")
+        single_skill = request.data.get("SingleSkill")
 
         if not number_of_days:
             return Response({"error": "NumberOfDays is required"}, status=400)
         
         if not app_consuming:
             return Response({"error" : "AppConsuming is required"}, status=status.HTTP_400_error)
+        
+        if single_skill is None:
+            configs = models.ConfigZipRecruiter.objects.all()
+        else:
+            configs = models.ConfigZipRecruiter.objects.filter(
+                skill__iexact=single_skill
+            )
+            if not configs.exists():
+                return Response(
+                    {"error" : "Skill %s does not exist" % single_skill}, status=status.HTTP_400_BAD_REQUEST
+                )
 
         client = ApifyClient(settings.APIFY_KEYS.get("ziprecruiter_key"))
 
-        configs = models.ConfigZipRecruiter.objects.all()
         results = []
         for config in configs:
 
-            scrape_url = config.url.replace("days=1", "days=%s" % number_of_days)
-            priority = config.priority
-            skill = config.skill
+            ############################################################
+            # This marks the current config as being active on the DB
+            ############################################################
+
+            config.is_active = True
+            config.save()
 
             #############################################################
             # Create the history first record for this scrape
             #############################################################
 
+            scrape_url = config.url.replace("days=1", "days=%s" % number_of_days)
+            priority = config.priority
+            skill = config.skill
             scrape_history = models.JobBoardScrapeHistory.objects.create(
                 url=scrape_url,
                 days=number_of_days,
                 job_board="ziprecruiter",
                 skill=skill,
-                priority=priority
+                priority=priority,
             )
             
             #############################################################
@@ -113,21 +135,33 @@ class ScrapeZipRecruiterEndpoint(APIView):
             scrape_history.price = run_price
             scrape_history.save()
             
-            ################################
-            # TO DO:
-            #   Store each result and link
-            #   to scrape history result
-            ################################
-
-            #if len(dataset_results) > 0:
-            #    self.store_results(scrape_history, dataset_results)
+            ###############################################
+            # Store each result and CerEaLize the records 
+            ###############################################
+            
+            store_status, to_serialize = self.store_results(scrape_history, dataset_results)
+            if store_status and len(to_serialize) > 0:
+                serializer = JobBoardScrapeResultsSerializer(to_serialize, many=True)
+                serialized_results = serializer.data
+            else:
+                serialized_results = []
 
             results.append({
                 "job_board" : "ziprecruiter",
-                "scrape_url": scrape_url,
+                "app_consuming" : app_consuming,
+                "skill" : skill,
+                "url" : scrape_url,
+                "results" : serialized_results,
                 "run_metadata" : result,
-                "results" : dataset_results
             })
+
+            ###############################################################
+            # Indicate that the current Job Config is not active (finished)
+            ###############################################################
+
+            config.is_active = False
+            config.save()
+
 
         return Response(
             {"message": "Scraping completed", "results": results},
@@ -136,4 +170,48 @@ class ScrapeZipRecruiterEndpoint(APIView):
 
 
     def store_results(self, scrape_history, results):
-        raise NotImplementedError()
+        try:
+            record_batch = []
+            for result in results:
+                data = dict(
+                    job_board_scrape_history=scrape_history,
+                    job_title = result.get("Title", "-"),
+                    job_description = result.get("description", "-"),
+                    source_job_board=scrape_history.job_board,
+                    skill=scrape_history.skill,
+                    priority = scrape_history.priority,
+                    date_scraped=scrape_history.date_scrape_started,
+                    run_id = scrape_history.run_id,
+                    date_job_posted_human_form=result.get("humanDate", "-"),
+                    salary_human_readable_form=result.get("FormattedSalary", "-"),
+                    job_type=result.get("EmploymentType", "-"),
+                    company=result.get("OrgName", "-"),
+                    location="%s, %s" % (result.get("City", "-"), result.get("State", "-")),
+                    job_url=result.get("JobURL", "-"),
+                    job_id="KEY-NOT-FOUND",
+                    #job_description_is_mismatch=False, # default!
+                    #who_flagged_job_description=None, # default!
+                    #is_complex_form=False, # default!
+                    apply_type='href',
+                    external_apply_url=result.get("QuickApplyHref", "-"),
+                    raw_json_result=result,
+                    raw_json_job_details=result.get("jobDetails"),
+                )
+                
+                #############################################
+                # Get the results here
+                #############################################
+                
+                record_batch.append(models.JobBoardScrapeResults(**data))
+            
+            ###############################################
+            # Bulk Insert
+            ###############################################
+
+            to_serialize = models.JobBoardScrapeResults.objects.bulk_create(record_batch)
+
+        except Exception as error:
+            logger.error(str(error))
+            return False, []
+                
+        return True, to_serialize
